@@ -1,0 +1,15 @@
+{
+  "name": "findmydog-server",
+  "version": "1.0.0",
+  "description": "Server-side dog simulation for FindMyDog",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
