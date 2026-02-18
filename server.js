@@ -155,6 +155,10 @@ async function loadOrCreateDog() {
   const ref = db.collection('dogs').doc(dateKey);
   const doc = await ref.get();
 
+  // Always publish the active dateKey so clients don't have to guess
+  await db.collection('meta').doc('currentDog').set({ dateKey });
+  console.log('[SERVER] Published active dateKey:', dateKey);
+
   if (doc.exists) {
     const d = doc.data();
     console.log(`[DOG] Loaded existing dog for ${dateKey}: ${d.dogName} @ ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}`);
