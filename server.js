@@ -182,7 +182,7 @@ async function loadOrCreateDog() {
   } else {
     console.log(`[DOG] Creating new dog for ${dateKey}: ${dogInfo.name}`);
     const p = randomPointInPolygon(BC_BOUNDARY);
-    const speedMps = (1 + Math.random() * 0.5) * 0.44704; // 1–1.5 mph in m/s
+    const speedMps = (1.75 + Math.random() * 0.5) * 0.44704; // 1–1.5 mph in m/s
 
     dog = {
       dateKey,
