@@ -3,6 +3,7 @@
 // Runs forever on Railway. Clients are pure read-only observers.
 // ============================================================
 
+process.env.TZ = 'America/New_York';
 const admin = require('firebase-admin');
 
 // ------------------------------------
