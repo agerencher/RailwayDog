@@ -55,6 +55,12 @@ const DOG_TICK_MS       = 1000;  // advance simulation every 1s
 const FIRESTORE_WRITE_MS = 3000; // write to Firestore every 3s (saves quota)
 const HEADING_CHANGE_MS  = 5000; // pick a new direction every ~5s (jittered)
 
+// Active hours: 10am–2am Eastern (16 hours = 19,200 writes/day at 3s cadence)
+function isActiveHours() {
+  const hour = new Date().getHours(); // Eastern Time (TZ already set at top)
+  return hour >= 10 || hour < 2;      // 10:00am to 1:59am
+}
+
 // ============================================================
 // Math helpers (mirrors client)
 // ============================================================
@@ -209,7 +215,7 @@ async function loadOrCreateDog() {
 // Tick — advance dog position by dtSeconds
 // ============================================================
 function tickDog(dtSeconds) {
-  if (!dog) return;
+  if (!dog || !isActiveHours()) return; // pause overnight (2am–10am)
 
   const stepM = dog.speedMps * dtSeconds;
   const dLat  = metersToLat(stepM * Math.cos(dog.headingRad));
@@ -234,7 +240,7 @@ function tickDog(dtSeconds) {
 // Flush in-memory state to Firestore (called on a slower cadence)
 // ============================================================
 async function flushToFirestore() {
-  if (!dog || !dirty) return;
+  if (!dog || !dirty || !isActiveHours()) return; // pause overnight (2am–10am)
   dirty = false;
 
   try {
@@ -295,6 +301,7 @@ async function startLoop() {
 // Day-change watcher — restarts loop at midnight
 // ============================================================
 let currentDateKey = todayKey();
+let wasActive = isActiveHours(); // track transitions into active hours
 
 setInterval(async () => {
   const newKey = todayKey();
@@ -303,7 +310,24 @@ setInterval(async () => {
     currentDateKey = newKey;
     dog = null;
     await startLoop();
+    return;
   }
+
+  // Detect transition from inactive → active (2am–10am → 10am)
+  const nowActive = isActiveHours();
+  if (nowActive && !wasActive) {
+    console.log('[SERVER] Active hours started — resetting dog to fresh position');
+    if (dog) {
+      const p = randomPointInPolygon(BC_BOUNDARY);
+      dog.lat = p.lat;
+      dog.lng = p.lng;
+      dog.headingRad = Math.random() * Math.PI * 2;
+      dog.lastUpdateMs = Date.now();
+      dirty = true;
+      await flushToFirestore();
+    }
+  }
+  wasActive = nowActive;
 }, 30_000); // check every 30s
 
 // ============================================================
