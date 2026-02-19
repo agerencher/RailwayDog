@@ -194,7 +194,9 @@ async function getOrCreateWeeklySchedule(weekKey) {
 }
 
 async function getDogForDate(dateKey) {
-  const date      = new Date(dateKey);
+  // Parse as local midnight — new Date('2026-02-19') parses as UTC midnight
+  // which is 7pm ET the day before, giving the wrong day index.
+  const date      = new Date(dateKey + 'T00:00:00');
   const weekKey   = getWeekKey(date);
   const dayOfWeek = getDayOfWeek(date);
   const schedule  = await getOrCreateWeeklySchedule(weekKey);
