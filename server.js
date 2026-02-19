@@ -55,12 +55,6 @@ const DOG_TICK_MS       = 1000;  // advance simulation every 1s
 const FIRESTORE_WRITE_MS = 3000; // write to Firestore every 3s (saves quota)
 const HEADING_CHANGE_MS  = 5000; // pick a new direction every ~5s (jittered)
 
-// Active hours: 10am–2am Eastern (16 hours = 19,200 writes/day at 3s cadence)
-function isActiveHours() {
-  const hour = new Date().getHours(); // Eastern Time (TZ already set at top)
-  return hour >= 10 || hour < 2;      // 10:00am to 1:59am
-}
-
 // ============================================================
 // Math helpers (mirrors client)
 // ============================================================
@@ -160,54 +154,89 @@ async function loadOrCreateDog() {
   const dateKey = todayKey();
   const dogInfo = await getDogForDate(dateKey);
   const ref = db.collection('dogs').doc(dateKey);
-  const doc = await ref.get();
 
-  // Always publish the active dateKey so clients don't have to guess
-  await db.collection('meta').doc('currentDog').set({ dateKey });
-  console.log('[SERVER] Published active dateKey:', dateKey);
+  // Publish active dateKey — non-fatal if it fails (quota, network, etc.)
+  try {
+    await db.collection('meta').doc('currentDog').set({ dateKey });
+    console.log('[SERVER] Published active dateKey:', dateKey);
+  } catch (err) {
+    console.warn('[SERVER] Could not publish dateKey (non-fatal):', err.message);
+  }
+
+  let doc;
+  try {
+    doc = await ref.get();
+  } catch (err) {
+    console.warn('[SERVER] Could not read dog from Firestore, using in-memory fallback:', err.message);
+    // Build an in-memory dog so the server keeps running even if Firestore is down
+    if (!dog) {
+      const p = randomPointInPolygon(BC_BOUNDARY);
+      dog = {
+        dateKey,
+        dogId:        dogInfo.id,
+        dogName:      dogInfo.name,
+        dogImage:     dogInfo.image,
+        lat:          p.lat,
+        lng:          p.lng,
+        speedMps:     (1.75 + Math.random() * 0.5) * 0.44704,
+        headingRad:   Math.random() * Math.PI * 2,
+        lastUpdateMs: Date.now(),
+      };
+    }
+    return;
+  }
 
   if (doc.exists) {
     const d = doc.data();
     console.log(`[DOG] Loaded existing dog for ${dateKey}: ${d.dogName} @ ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}`);
     dog = {
-      dateKey:    d.dateKey,
-      dogId:      d.dogId    || dogInfo.id,
-      dogName:    d.dogName  || dogInfo.name,
-      dogImage:   d.dogImage || dogInfo.image,
-      lat:        d.lat,
-      lng:        d.lng,
-      speedMps:   d.speedMps,
-      headingRad: d.headingRad,
+      dateKey:      d.dateKey,
+      dogId:        d.dogId    || dogInfo.id,
+      dogName:      d.dogName  || dogInfo.name,
+      dogImage:     d.dogImage || dogInfo.image,
+      lat:          d.lat,
+      lng:          d.lng,
+      speedMps:     d.speedMps,
+      headingRad:   d.headingRad,
       lastUpdateMs: d.lastUpdateMs || Date.now(),
     };
 
-    // Patch old docs missing dog info
+    // Patch old docs missing dog info (non-fatal)
     if (!d.dogId) {
-      await ref.update({ dogId: dogInfo.id, dogName: dogInfo.name, dogImage: dogInfo.image });
+      try {
+        await ref.update({ dogId: dogInfo.id, dogName: dogInfo.name, dogImage: dogInfo.image });
+      } catch (err) {
+        console.warn('[SERVER] Could not patch dog info:', err.message);
+      }
     }
   } else {
     console.log(`[DOG] Creating new dog for ${dateKey}: ${dogInfo.name}`);
     const p = randomPointInPolygon(BC_BOUNDARY);
-    const speedMps = (1.75 + Math.random() * 0.5) * 0.44704; // 1–1.5 mph in m/s
+    const speedMps = (1.75 + Math.random() * 0.5) * 0.44704;
 
     dog = {
       dateKey,
-      dogId:      dogInfo.id,
-      dogName:    dogInfo.name,
-      dogImage:   dogInfo.image,
-      lat:        p.lat,
-      lng:        p.lng,
+      dogId:        dogInfo.id,
+      dogName:      dogInfo.name,
+      dogImage:     dogInfo.image,
+      lat:          p.lat,
+      lng:          p.lng,
       speedMps,
-      headingRad: Math.random() * Math.PI * 2,
+      headingRad:   Math.random() * Math.PI * 2,
       lastUpdateMs: Date.now(),
     };
 
-    await ref.set({
-      ...dog,
-      createdBy:  'server',
-      createdAt:  admin.firestore.FieldValue.serverTimestamp(),
-      serverControlled: true,
-    });
+    try {
+      await ref.set({
+        ...dog,
+        createdBy:        'server',
+        createdAt:        admin.firestore.FieldValue.serverTimestamp(),
+        serverControlled: true,
+      });
+    } catch (err) {
+      console.warn('[SERVER] Could not save new dog to Firestore (will retry on next flush):', err.message);
+      dirty = true; // mark dirty so flushToFirestore retries when quota resets
+    }
   }
 }
 
@@ -215,7 +244,7 @@ async function loadOrCreateDog() {
 // Tick — advance dog position by dtSeconds
 // ============================================================
 function tickDog(dtSeconds) {
-  if (!dog || !isActiveHours()) return; // pause overnight (2am–10am)
+  if (!dog) return;
 
   const stepM = dog.speedMps * dtSeconds;
   const dLat  = metersToLat(stepM * Math.cos(dog.headingRad));
@@ -240,7 +269,7 @@ function tickDog(dtSeconds) {
 // Flush in-memory state to Firestore (called on a slower cadence)
 // ============================================================
 async function flushToFirestore() {
-  if (!dog || !dirty || !isActiveHours()) return; // pause overnight (2am–10am)
+  if (!dog || !dirty) return;
   dirty = false;
 
   try {
@@ -301,7 +330,6 @@ async function startLoop() {
 // Day-change watcher — restarts loop at midnight
 // ============================================================
 let currentDateKey = todayKey();
-let wasActive = isActiveHours(); // track transitions into active hours
 
 setInterval(async () => {
   const newKey = todayKey();
@@ -310,33 +338,29 @@ setInterval(async () => {
     currentDateKey = newKey;
     dog = null;
     await startLoop();
-    return;
   }
-
-  // Detect transition from inactive → active (2am–10am → 10am)
-  const nowActive = isActiveHours();
-  if (nowActive && !wasActive) {
-    console.log('[SERVER] Active hours started — resetting dog to fresh position');
-    if (dog) {
-      const p = randomPointInPolygon(BC_BOUNDARY);
-      dog.lat = p.lat;
-      dog.lng = p.lng;
-      dog.headingRad = Math.random() * Math.PI * 2;
-      dog.lastUpdateMs = Date.now();
-      dirty = true;
-      await flushToFirestore();
-    }
-  }
-  wasActive = nowActive;
 }, 30_000); // check every 30s
 
 // ============================================================
-// Boot
+// Boot — retry on failure instead of crashing
 // ============================================================
-startLoop().catch(err => {
-  console.error('[SERVER] Fatal startup error:', err);
-  process.exit(1);
-});
+async function boot() {
+  let attempts = 0;
+  while (true) {
+    try {
+      await startLoop();
+      console.log('[SERVER] Boot successful');
+      return;
+    } catch (err) {
+      attempts++;
+      const wait = Math.min(attempts * 5000, 30000); // back off up to 30s
+      console.error(`[SERVER] Boot attempt ${attempts} failed: ${err.message}. Retrying in ${wait / 1000}s...`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+}
+
+boot();
 
 // Keep Railway happy — it expects a long-running process
 process.on('SIGTERM', () => {
