@@ -6,6 +6,19 @@
 // Force Eastern Time so date rollover matches Boston College's timezone.
 process.env.TZ = 'America/New_York';
 
+// ============================================================
+// Global error handlers — must be first so nothing crashes silently
+// ============================================================
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err.message, err.stack);
+  // Do NOT exit — keep the HTTP server alive so Railway doesn't restart loop
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled promise rejection:', reason);
+  // Do NOT exit — keep the HTTP server alive
+});
+
 const admin = require('firebase-admin');
 const http  = require('http');
 
