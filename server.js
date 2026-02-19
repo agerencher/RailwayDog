@@ -6,6 +6,11 @@
 process.env.TZ = 'America/New_York';
 const admin = require('firebase-admin');
 
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error('[SERVER] FATAL: FIREBASE_SERVICE_ACCOUNT environment variable is not set');
+  process.exit(1);
+}
+
 // ------------------------------------
 // Firebase init (uses env var on Railway)
 // ------------------------------------
@@ -367,4 +372,4 @@ process.on('SIGTERM', () => {
   console.log('[SERVER] Shutting down gracefully');
   stopLoop();
   process.exit(0);
-});
+}); 
